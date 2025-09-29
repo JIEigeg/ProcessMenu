@@ -10,22 +10,17 @@
 ## Key Features
 
 *   **Custom Process Parentage:**
-    *   **Launch with an existing parent process:** This feature enables you to select any currently running process on your system to act as the parent for the new process you wish to launch. This is particularly useful for simulating specific application environments or for bypassing certain security restrictions that rely on process lineage.
-    *   **Launch with a new, temporary parent process:** For scenarios where you need a clean or isolated parent, `ProcessMenu` can create a temporary "dummy parent" process. This dummy parent then launches your target executable, and is subsequently terminated, leaving your target process with a custom, short-lived parentage. This can be beneficial for testing or for obscuring the true origin of a process.
-
+    *   Launch new processes with an existing running process as the parent.
+    *   Launch new processes with a new, temporary, "dummy parent" process.
 *   **Comprehensive Process Event Logging:**
-    *   When launching a process with a new, temporary parent, you have the option to enable detailed logging of debugging events. This includes, but is not limited to:
-        *   **DLL Load/Unload Events:** Monitor which dynamic-link libraries are loaded and unloaded by the target process, providing insights into its dependencies and runtime behavior.
-        *   **Thread Creation/Termination:** Track the lifecycle of threads within the target process, helping to understand its concurrency model and identify potential threading issues.
-        *   **Exception Handling:** Log all exceptions (first-chance and second-chance) that occur within the target process, including their codes, descriptions, and memory addresses. This is invaluable for diagnosing crashes and unexpected behavior.
-
+    *   Log debugging events, including DLL loads/unloads, thread creation/termination, and exceptions.
+    *   **Capture Debug Strings:** The debugger now captures and displays output from `OutputDebugStringA` and `OutputDebugStringW` from the target process in the main log window.
 *   **Advanced Memory Viewer:**
-    *   `ProcessMenu` includes an integrated memory viewer that allows for real-time inspection of the debugged process's memory space.
-    *   **Memory Dump:** View raw hexadecimal dumps of memory at specified addresses, accompanied by their ASCII representations, facilitating the analysis of data structures and code segments.
-    *   **Memory Regions Listing:** Obtain a detailed list of all allocated memory regions within the target process. This includes crucial information such as base address, size, current state (committed, reserved, free), type (image, mapped, private), and memory protection attributes (read, write, execute, copy-on-write, guard pages, no-cache, write-combine).
-
+    *   View raw hexadecimal dumps of memory at specified addresses.
+    *   List all virtual memory regions with details on base address, size, state, type, and protection.
+    *   **Module List:** A new tab lists all loaded modules (DLLs) in the debugged process, including their name, base address, size, and full path.
 *   **Intuitive Process Picker Dialog:**
-    *   A user-friendly dialog simplifies the selection of parent processes. It displays a comprehensive list of all currently running processes, showing their executable names and Process IDs (PIDs), making it easy to identify and choose the desired parent.
+    *   A user-friendly dialog to select parent processes from a list of all running processes.
 
 ## Build and Run
 
@@ -73,19 +68,14 @@ This dialog appears when you click the `...` button next to the "Parent Process 
 
 ### Memory Viewer Window
 
-This window provides two main tabs for memory analysis:
+This window provides three main tabs for memory analysis:
 
 1.  **Address Input:** Enter a hexadecimal memory address (e.g., `0x401000`) in the "Address" field.
 2.  **View Memory Button:** Clicking this button will fetch and display a memory dump starting from the specified address.
 3.  **Tabs:**
     *   **Memory Dump:** This tab displays a formatted view of the memory content. It shows the hexadecimal values of bytes, grouped for readability, alongside their ASCII character representations. This is crucial for understanding data structures, strings, and executable code.
-    *   **Memory Regions:** This tab provides a tabular listing of all virtual memory regions allocated by the debugged process. Each entry includes:
-        *   **Base Address:** The starting address of the memory region.
-        *   **Size:** The total size of the region.
-        *   **State:** Indicates whether the memory is `Committed`, `Reserved`, or `Free`.
-        *   **Type:** Specifies the type of memory, such as `Image` (executable code/data), `Mapped` (file-backed), or `Private` (application-specific data).
-        *   **Protection:** Describes the access rights for the memory region (e.g., `R` for Read, `RW` for Read/Write, `RX` for Read/Execute, `RWX` for Read/Write/Execute, `NA` for No Access, `G` for Guard Page, `NC` for No Cache, `WC` for Write Combine).
-        Right-clicking on an item in this list allows you to copy its base address or view its content directly in the "Memory Dump" tab.
+    *   **Memory Regions:** This tab provides a tabular listing of all virtual memory regions allocated by the debugged process. Each entry includes details like Base Address, Size, State, Type, and Protection. Right-clicking an item allows you to copy its base address or view its content directly in the "Memory Dump" tab.
+    *   **Modules:** This new tab lists all modules (executables and DLLs) loaded by the debugged process. It displays the module name, base address, size, and the full path to the module file on disk. This is useful for understanding the process's dependencies and memory layout.
 
 ## License
 

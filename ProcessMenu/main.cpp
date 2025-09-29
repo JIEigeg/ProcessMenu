@@ -52,6 +52,7 @@ using namespace std;
 #define IDC_MV_TAB 204
 #define IDC_MV_DUMP_OUTPUT 205
 #define IDC_MV_REGION_LIST 206
+#define IDC_MV_MODULE_LIST 207
 #define ID_COPY_ADDRESS 300
 #define ID_VIEW_IN_DUMP 301
 
@@ -61,6 +62,8 @@ using namespace std;
 #define WM_USER_REGIONS_DONE (WM_APP + 3)
 #define WM_USER_UPDATE_DUMP (WM_APP + 4)
 #define WM_USER_DUMP_DONE (WM_APP + 5)
+#define WM_USER_ADD_MODULE (WM_APP + 6)
+#define WM_USER_MODULES_DONE (WM_APP + 7)
 
 // --- Global Handles ---
 HWND g_hLogEdit;
@@ -97,7 +100,21 @@ struct MemRegionData
     wchar_t protection[64];
 };
 
+struct ModuleData
+{
+    wchar_t name[MAX_PATH];
+    wchar_t path[MAX_PATH];
+    wchar_t baseAddr[20];
+    wchar_t size[32];
+};
+
 struct ListRegionsThreadData
+{
+    HWND hMemView;
+    HANDLE hProcess;
+};
+
+struct ListModulesThreadData
 {
     HWND hMemView;
     HANDLE hProcess;
@@ -127,6 +144,7 @@ void HandleCopyLog(HWND hwnd);
 void HandleSaveLog(HWND hwnd);
 void HandleViewMemory(HWND hMemView);
 void HandleListMemoryRegions(HWND hMemView);
+void HandleListModules(HWND hMemView);
 void CreateControls(HWND hwnd);
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -137,6 +155,7 @@ void PostLogMessageF(HWND hwnd, COLORREF color, const wchar_t *format, ...);
 void PostLogMessageF(HWND hwnd, const wchar_t *format, ...);
 DWORD WINAPI DebugThreadProc(LPVOID lpParam);
 DWORD WINAPI ListRegionsThreadProc(LPVOID lpParam);
+DWORD WINAPI ListModulesThreadProc(LPVOID lpParam);
 DWORD WINAPI ViewMemoryThreadProc(LPVOID lpParam);
 LRESULT CALLBACK ProcessPickerDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 void RegisterProcessPickerClass(HINSTANCE hInstance);
@@ -622,6 +641,34 @@ void HandleListMemoryRegions(HWND hMemView)
     }
 }
 
+void HandleListModules(HWND hMemView)
+{
+    HANDLE currentProcess = g_hDebuggedProcess.load();
+    if (currentProcess == NULL)
+    {
+        MessageBoxW(hMemView, L"No process is currently being debugged.", L"Warning", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    HWND hList = GetDlgItem(hMemView, IDC_MV_MODULE_LIST);
+    ListView_DeleteAllItems(hList);
+
+    ListModulesThreadData *data = new ListModulesThreadData;
+    data->hMemView = hMemView;
+    data->hProcess = currentProcess;
+
+    HANDLE hThread = CreateThread(NULL, 0, ListModulesThreadProc, data, 0, NULL);
+    if (hThread == NULL)
+    {
+        MessageBoxW(hMemView, L"Failed to create module list thread.", L"Error", MB_OK | MB_ICONERROR);
+        delete data;
+    }
+    else
+    {
+        CloseHandle(hThread);
+    }
+}
+
 DWORD WINAPI ListRegionsThreadProc(LPVOID lpParam)
 {
     ListRegionsThreadData *data = (ListRegionsThreadData *)lpParam;
@@ -708,6 +755,52 @@ DWORD WINAPI ListRegionsThreadProc(LPVOID lpParam)
     }
 
     PostMessage(data->hMemView, WM_USER_REGIONS_DONE, 0, 0);
+    delete data;
+    return 0;
+}
+
+DWORD WINAPI ListModulesThreadProc(LPVOID lpParam)
+{
+    ListModulesThreadData *data = (ListModulesThreadData *)lpParam;
+    if (!data)
+        return 1;
+
+    DWORD processId = GetProcessId(data->hProcess);
+    if (processId == 0)
+    {
+        delete data;
+        return 1;
+    }
+
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+    if (hSnap == INVALID_HANDLE_VALUE)
+    {
+        PostMessage(data->hMemView, WM_USER_MODULES_DONE, 0, 0);
+        delete data;
+        return 1;
+    }
+
+    MODULEENTRY32W me32;
+    me32.dwSize = sizeof(MODULEENTRY32W);
+
+    if (Module32FirstW(hSnap, &me32))
+    {
+        do
+        {
+            ModuleData *module = new ModuleData;
+
+            wcscpy_s(module->name, me32.szModule);
+            wcscpy_s(module->path, me32.szExePath);
+            swprintf(module->baseAddr, 20, L"0x%016llX", (unsigned long long)me32.modBaseAddr);
+            swprintf(module->size, 32, L"%llu KB", (unsigned long long)me32.modBaseSize / 1024);
+
+            PostMessage(data->hMemView, WM_USER_ADD_MODULE, (WPARAM)module, 0);
+
+        } while (Module32NextW(hSnap, &me32));
+    }
+
+    CloseHandle(hSnap);
+    PostMessage(data->hMemView, WM_USER_MODULES_DONE, 0, 0);
     delete data;
     return 0;
 }
@@ -1090,6 +1183,39 @@ void DebugLoop(PROCESS_INFORMATION &pi, HWND hMainWnd)
             break;
         }
 
+        case OUTPUT_DEBUG_STRING_EVENT:
+        {
+            const OUTPUT_DEBUG_STRING_INFO &debugStringInfo = debugEvent.u.DebugString;
+            if (debugStringInfo.nDebugStringLength > 0)
+            {
+                if (debugStringInfo.fUnicode)
+                {
+                    std::vector<wchar_t> buffer(debugStringInfo.nDebugStringLength + 1, 0);
+                    SIZE_T bytesRead = 0;
+                    if (ReadProcessMemory(pi.hProcess, debugStringInfo.lpDebugStringData, buffer.data(), debugStringInfo.nDebugStringLength * sizeof(wchar_t), &bytesRead))
+                    {
+                        PostLogMessageF(hMainWnd, RGB(200, 200, 0), L"  [DEBUG STRING] %s", buffer.data());
+                    }
+                }
+                else
+                {
+                    std::vector<char> buffer(debugStringInfo.nDebugStringLength + 1, 0);
+                    SIZE_T bytesRead = 0;
+                    if (ReadProcessMemory(pi.hProcess, debugStringInfo.lpDebugStringData, buffer.data(), debugStringInfo.nDebugStringLength, &bytesRead))
+                    {
+                        int len = MultiByteToWideChar(CP_ACP, 0, buffer.data(), -1, NULL, 0);
+                        if (len > 0)
+                        {
+                            std::vector<wchar_t> wideBuffer(len);
+                            MultiByteToWideChar(CP_ACP, 0, buffer.data(), -1, wideBuffer.data(), len);
+                            PostLogMessageF(hMainWnd, RGB(200, 200, 0), L"  [DEBUG STRING] %s", wideBuffer.data());
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
         case EXCEPTION_DEBUG_EVENT:
         {
             const EXCEPTION_RECORD &record = debugEvent.u.Exception.ExceptionRecord;
@@ -1391,6 +1517,8 @@ void CreateMemViewControls(HWND hwnd)
     TabCtrl_InsertItem(hTab, 0, &tie);
     tie.pszText = (LPWSTR)L"Memory Regions";
     TabCtrl_InsertItem(hTab, 1, &tie);
+    tie.pszText = (LPWSTR)L"Modules";
+    TabCtrl_InsertItem(hTab, 2, &tie);
 
     // Calculate the display area for the tab's content, relative to the main window
     RECT rcTabWindow;
@@ -1447,9 +1575,42 @@ void CreateMemViewControls(HWND hwnd)
     lvc.cx = listWidth - totalWidth - 4;
     ListView_InsertColumn(hRegionList, 4, &lvc);
 
+    // Create Module List View
+    HWND hModuleList = CreateWindowW(WC_LISTVIEW, L"", WS_CHILD | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
+                                     childX, childY, childWidth, childHeight,
+                                     hwnd, (HMENU)IDC_MV_MODULE_LIST, NULL, NULL);
+    SendMessage(hModuleList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+    ListView_SetExtendedListViewStyle(hModuleList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+
+    // Setup columns for module list
+    GetClientRect(hModuleList, &rcList);
+    listWidth = rcList.right - rcList.left;
+
+    LVCOLUMNW lvcModule = {0};
+    lvcModule.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+
+    const wchar_t *moduleColNames[] = {L"Module Name", L"Base Address", L"Size"};
+    int moduleColWidths[] = {180, 150, 100};
+    totalWidth = 0;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        lvcModule.iSubItem = i;
+        lvcModule.pszText = (LPWSTR)moduleColNames[i];
+        lvcModule.cx = moduleColWidths[i];
+        ListView_InsertColumn(hModuleList, i, &lvcModule);
+        totalWidth += moduleColWidths[i];
+    }
+
+    lvcModule.iSubItem = 3;
+    lvcModule.pszText = (LPWSTR)L"Path";
+    lvcModule.cx = listWidth - totalWidth - 4;
+    ListView_InsertColumn(hModuleList, 3, &lvcModule);
+
     // Show the first page, hide the second
     ShowWindow(hDumpOutput, SW_SHOW);
     ShowWindow(hRegionList, SW_HIDE);
+    ShowWindow(hModuleList, SW_HIDE);
 }
 
 LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -1485,9 +1646,36 @@ LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         break;
     }
+    case WM_USER_ADD_MODULE:
+    {
+        ModuleData *module = (ModuleData *)wParam;
+        if (module)
+        {
+            HWND hList = GetDlgItem(hwnd, IDC_MV_MODULE_LIST);
+            int index = ListView_GetItemCount(hList);
+
+            LVITEMW item = {0};
+            item.mask = LVIF_TEXT;
+            item.iItem = index;
+            item.iSubItem = 0;
+            item.pszText = module->name;
+            ListView_InsertItem(hList, &item);
+
+            ListView_SetItemText(hList, index, 1, module->baseAddr);
+            ListView_SetItemText(hList, index, 2, module->size);
+            ListView_SetItemText(hList, index, 3, module->path);
+
+            delete module;
+        }
+        break;
+    }
     case WM_USER_REGIONS_DONE:
     {
         EnableWindow(GetDlgItem(hwnd, IDC_MV_LIST_BTN), TRUE);
+        break;
+    }
+    case WM_USER_MODULES_DONE:
+    {
         break;
     }
     case WM_USER_UPDATE_DUMP:
@@ -1513,11 +1701,19 @@ LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int iPage = TabCtrl_GetCurSel(lpnmh->hwndFrom);
             ShowWindow(GetDlgItem(hwnd, IDC_MV_DUMP_OUTPUT), iPage == 0 ? SW_SHOW : SW_HIDE);
             ShowWindow(GetDlgItem(hwnd, IDC_MV_REGION_LIST), iPage == 1 ? SW_SHOW : SW_HIDE);
+            ShowWindow(GetDlgItem(hwnd, IDC_MV_MODULE_LIST), iPage == 2 ? SW_SHOW : SW_HIDE);
             if (iPage == 1)
             {
                 if (ListView_GetItemCount(GetDlgItem(hwnd, IDC_MV_REGION_LIST)) == 0)
                 {
                     HandleListMemoryRegions(hwnd);
+                }
+            }
+            else if (iPage == 2)
+            {
+                if (ListView_GetItemCount(GetDlgItem(hwnd, IDC_MV_MODULE_LIST)) == 0)
+                {
+                    HandleListModules(hwnd);
                 }
             }
         }
