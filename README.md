@@ -1,5 +1,8 @@
 # ProcessMenu
 
+<img width="626" height="503" alt="ProcessMenu_UCKRcbnlmN" src="https://github.com/user-attachments/assets/b2d50b83-1dd0-468c-9336-de0e66b2304b" />
+
+
 ## Description
 
 `ProcessMenu` is a robust C++ utility for Windows, designed to provide advanced process management capabilities through an intuitive graphical user interface. It allows users to launch new processes with custom parentage, offering enhanced control over process hierarchies. Additionally, it integrates a powerful debugging feature to log critical process events and a comprehensive memory viewer for in-depth analysis of running applications.
