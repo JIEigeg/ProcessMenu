@@ -1,0 +1,31 @@
+# Visual Studio files
+.vs/
+*.suo
+*.user
+*.ilk
+*.pdb
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.log
+*.tlog
+*.ipdb
+*.iobj
+*.build.cppclean
+*.lastbuildstate
+Debug/
+Release/
+x64/
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+
+# Other
+*~
+*.bak
+*.swp
