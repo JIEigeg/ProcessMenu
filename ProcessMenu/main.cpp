@@ -64,6 +64,7 @@ using namespace std;
 #define WM_USER_DUMP_DONE (WM_APP + 5)
 #define WM_USER_ADD_MODULE (WM_APP + 6)
 #define WM_USER_MODULES_DONE (WM_APP + 7)
+#define WM_USER_DEBUG_SESSION_ENDED (WM_APP + 8)
 
 // --- Global Handles ---
 HWND g_hLogEdit;
@@ -71,6 +72,7 @@ HWND g_hParentEdit;
 HWND g_hExePathEdit;
 HWND g_hRadioExisting, g_hRadioNew, g_hRadioNewLog;
 HFONT g_hFont;
+HFONT g_hMonoFont = NULL;
 std::atomic<HANDLE> g_hDebuggedProcess = NULL;
 HWND g_hMemView = NULL;
 HANDLE g_hDebugThread = NULL;
@@ -145,6 +147,7 @@ void HandleSaveLog(HWND hwnd);
 void HandleViewMemory(HWND hMemView);
 void HandleListMemoryRegions(HWND hMemView);
 void HandleListModules(HWND hMemView);
+void SetMainControlsEnabled(HWND hwnd, BOOL bEnabled);
 void CreateControls(HWND hwnd);
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -234,6 +237,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             LogEx(logData->text, logData->color);
             delete logData;
         }
+        break;
+    }
+    case WM_USER_DEBUG_SESSION_ENDED:
+    {
+        SetMainControlsEnabled(hwnd, TRUE);
         break;
     }
     case WM_COMMAND:
@@ -377,6 +385,18 @@ void CreateControls(HWND hwnd)
     SendMessage(hCopyLog, WM_SETFONT, (WPARAM)g_hFont, TRUE);
     HWND hSaveLog = CreateWindowW(L"Button", L"Save Log As...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 315, 430, 295, 30, hwnd, (HMENU)IDC_SAVE_LOG_BTN, NULL, NULL);
     SendMessage(hSaveLog, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+}
+
+void SetMainControlsEnabled(HWND hwnd, BOOL bEnabled)
+{
+    EnableWindow(g_hRadioExisting, bEnabled);
+    EnableWindow(g_hRadioNew, bEnabled);
+    EnableWindow(g_hRadioNewLog, bEnabled);
+    EnableWindow(g_hParentEdit, bEnabled);
+    EnableWindow(g_hExePathEdit, bEnabled);
+    EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_PARENT_BTN), bEnabled);
+    EnableWindow(GetDlgItem(hwnd, IDC_BROWSE_BTN), bEnabled);
+    EnableWindow(GetDlgItem(hwnd, IDC_LAUNCH_BTN), bEnabled);
 }
 
 void HandleLaunch(HWND hwnd)
@@ -1050,8 +1070,11 @@ void LaunchWithNewParent(bool withLogging)
             g_hDebugThread = NULL;
         }
 
+        HWND hMainWnd = GetParent(g_hLogEdit);
+        SetMainControlsEnabled(hMainWnd, FALSE);
+
         DebugThreadData *data = new DebugThreadData;
-        data->hMainWnd = GetParent(g_hLogEdit);
+        data->hMainWnd = hMainWnd;
         data->newParentName = newParentName;
         data->exePathStr = exePathStr;
         data->hParentProcess = piParent.hProcess;
@@ -1123,6 +1146,7 @@ DWORD WINAPI DebugThreadProc(LPVOID lpParam)
         PostLogMessageF(data->hMainWnd, RGB(255, 165, 0), L"\nWarning: Could not delete temporary file '%s'. Error code: %d", data->newParentName.c_str(), GetLastError());
     }
 
+    PostMessage(data->hMainWnd, WM_USER_DEBUG_SESSION_ENDED, 0, 0);
     delete data;
     return 0;
 }
@@ -1538,8 +1562,11 @@ void CreateMemViewControls(HWND hwnd)
     HWND hDumpOutput = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY,
                                        childX, childY, childWidth, childHeight,
                                        hwnd, (HMENU)IDC_MV_DUMP_OUTPUT, NULL, NULL);
-    HFONT hMonoFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-    SendMessage(hDumpOutput, WM_SETFONT, (WPARAM)hMonoFont, TRUE);
+    if (g_hMonoFont == NULL)
+    {
+        g_hMonoFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    }
+    SendMessage(hDumpOutput, WM_SETFONT, (WPARAM)g_hMonoFont, TRUE);
 
     // Create Region List View
     HWND hRegionList = CreateWindowW(WC_LISTVIEW, L"", WS_CHILD | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
@@ -1794,6 +1821,11 @@ LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         DestroyWindow(hwnd);
         break;
     case WM_DESTROY:
+        if (g_hMonoFont)
+        {
+            DeleteObject(g_hMonoFont);
+            g_hMonoFont = NULL;
+        }
         g_hMemView = NULL;
         break;
     default:
