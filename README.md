@@ -19,6 +19,7 @@
     *   View raw hexadecimal dumps of memory at specified addresses.
     *   List all virtual memory regions with details on base address, size, state, type, and protection.
     *   **Module List:** A new tab lists all loaded modules (DLLs) in the debugged process, including their name, base address, size, and full path.
+    *   **Threads:** This new tab enumerates all active threads within the debugged process, providing their Thread ID, Base Priority, and current State (e.g., Running, Suspended). This is invaluable for analyzing multi-threaded applications and identifying potential concurrency issues.
 *   **Intuitive Process Picker Dialog:**
     *   A user-friendly dialog to select parent processes from a list of all running processes.
 
@@ -76,6 +77,7 @@ This window provides three main tabs for memory analysis:
     *   **Memory Dump:** This tab displays a formatted view of the memory content. It shows the hexadecimal values of bytes, grouped for readability, alongside their ASCII character representations. This is crucial for understanding data structures, strings, and executable code.
     *   **Memory Regions:** This tab provides a tabular listing of all virtual memory regions allocated by the debugged process. Each entry includes details like Base Address, Size, State, Type, and Protection. Right-clicking an item allows you to copy its base address or view its content directly in the "Memory Dump" tab.
     *   **Modules:** This new tab lists all modules (executables and DLLs) loaded by the debugged process. It displays the module name, base address, size, and the full path to the module file on disk. This is useful for understanding the process's dependencies and memory layout.
+    *   **Threads:** This new tab enumerates all active threads within the debugged process, providing their Thread ID, Base Priority, and current State (e.g., Running, Suspended). This is invaluable for analyzing multi-threaded applications and identifying potential concurrency issues.
 
 ## License
 

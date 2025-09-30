@@ -55,6 +55,7 @@ using namespace std;
 #define IDC_MV_MODULE_LIST 207
 #define ID_COPY_ADDRESS 300
 #define ID_VIEW_IN_DUMP 301
+#define IDC_MV_THREAD_LIST 208
 
 // --- Custom Window Messages ---
 #define WM_USER_LOG (WM_APP + 1)
@@ -65,6 +66,8 @@ using namespace std;
 #define WM_USER_ADD_MODULE (WM_APP + 6)
 #define WM_USER_MODULES_DONE (WM_APP + 7)
 #define WM_USER_DEBUG_SESSION_ENDED (WM_APP + 8)
+#define WM_USER_ADD_THREAD (WM_APP + 9)
+#define WM_USER_THREADS_DONE (WM_APP + 10)
 
 // --- Global Handles ---
 HWND g_hLogEdit;
@@ -110,6 +113,13 @@ struct ModuleData
     wchar_t size[32];
 };
 
+struct ThreadData
+{
+    wchar_t threadId[20];
+    wchar_t priority[20];
+    wchar_t state[32];
+};
+
 struct ListRegionsThreadData
 {
     HWND hMemView;
@@ -117,6 +127,12 @@ struct ListRegionsThreadData
 };
 
 struct ListModulesThreadData
+{
+    HWND hMemView;
+    HANDLE hProcess;
+};
+
+struct ListThreadsThreadData
 {
     HWND hMemView;
     HANDLE hProcess;
@@ -147,6 +163,7 @@ void HandleSaveLog(HWND hwnd);
 void HandleViewMemory(HWND hMemView);
 void HandleListMemoryRegions(HWND hMemView);
 void HandleListModules(HWND hMemView);
+void HandleListThreads(HWND hMemView);
 void SetMainControlsEnabled(HWND hwnd, BOOL bEnabled);
 void CreateControls(HWND hwnd);
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -159,6 +176,7 @@ void PostLogMessageF(HWND hwnd, const wchar_t *format, ...);
 DWORD WINAPI DebugThreadProc(LPVOID lpParam);
 DWORD WINAPI ListRegionsThreadProc(LPVOID lpParam);
 DWORD WINAPI ListModulesThreadProc(LPVOID lpParam);
+DWORD WINAPI ListThreadsThreadProc(LPVOID lpParam);
 DWORD WINAPI ViewMemoryThreadProc(LPVOID lpParam);
 LRESULT CALLBACK ProcessPickerDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 void RegisterProcessPickerClass(HINSTANCE hInstance);
@@ -549,7 +567,9 @@ DWORD WINAPI ViewMemoryThreadProc(LPVOID lpParam)
 
     unsigned char buffer[256];
     SIZE_T bytesRead = 0;
-    if (!ReadProcessMemory(data->hProcess, (LPCVOID)data->address, buffer, sizeof(buffer), &bytesRead))
+    // Allow partial reads, which can happen when reading near the end of a memory region.
+    // ReadProcessMemory will return FALSE and GetLastError() will be ERROR_PARTIAL_COPY.
+    if (!ReadProcessMemory(data->hProcess, (LPCVOID)data->address, buffer, sizeof(buffer), &bytesRead) && GetLastError() != ERROR_PARTIAL_COPY)
     {
         wchar_t errorMsg[256];
         swprintf(errorMsg, 256, L"Could not read process memory. Error code: %d", GetLastError());
@@ -681,6 +701,34 @@ void HandleListModules(HWND hMemView)
     if (hThread == NULL)
     {
         MessageBoxW(hMemView, L"Failed to create module list thread.", L"Error", MB_OK | MB_ICONERROR);
+        delete data;
+    }
+    else
+    {
+        CloseHandle(hThread);
+    }
+}
+
+void HandleListThreads(HWND hMemView)
+{
+    HANDLE currentProcess = g_hDebuggedProcess.load();
+    if (currentProcess == NULL)
+    {
+        MessageBoxW(hMemView, L"No process is currently being debugged.", L"Warning", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    HWND hList = GetDlgItem(hMemView, IDC_MV_THREAD_LIST);
+    ListView_DeleteAllItems(hList);
+
+    ListThreadsThreadData *data = new ListThreadsThreadData;
+    data->hMemView = hMemView;
+    data->hProcess = currentProcess;
+
+    HANDLE hThread = CreateThread(NULL, 0, ListThreadsThreadProc, data, 0, NULL);
+    if (hThread == NULL)
+    {
+        MessageBoxW(hMemView, L"Failed to create thread list thread.", L"Error", MB_OK | MB_ICONERROR);
         delete data;
     }
     else
@@ -821,6 +869,79 @@ DWORD WINAPI ListModulesThreadProc(LPVOID lpParam)
 
     CloseHandle(hSnap);
     PostMessage(data->hMemView, WM_USER_MODULES_DONE, 0, 0);
+    delete data;
+    return 0;
+}
+
+DWORD WINAPI ListThreadsThreadProc(LPVOID lpParam)
+{
+    ListThreadsThreadData *data = (ListThreadsThreadData *)lpParam;
+    if (!data)
+        return 1;
+
+    DWORD processId = GetProcessId(data->hProcess);
+    if (processId == 0)
+    {
+        delete data;
+        return 1;
+    }
+
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hSnap == INVALID_HANDLE_VALUE)
+    {
+        PostMessage(data->hMemView, WM_USER_THREADS_DONE, 0, 0);
+        delete data;
+        return 1;
+    }
+
+    THREADENTRY32 te32;
+    te32.dwSize = sizeof(THREADENTRY32);
+
+    if (Thread32First(hSnap, &te32))
+    {
+        do
+        {
+            if (te32.th32OwnerProcessID == processId)
+            {
+                ThreadData *thread = new ThreadData;
+
+                swprintf(thread->threadId, 20, L"%d", te32.th32ThreadID);
+                swprintf(thread->priority, 20, L"%d", te32.tpBasePri);
+
+                HANDLE hThread = OpenThread(THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME, FALSE, te32.th32ThreadID);
+                if (hThread)
+                {
+                    DWORD suspendCount = SuspendThread(hThread);
+                    if (suspendCount != (DWORD)-1)
+                    {
+                        ResumeThread(hThread);
+                        if (suspendCount > 0)
+                        {
+                            wcscpy_s(thread->state, L"Suspended");
+                        }
+                        else
+                        {
+                            wcscpy_s(thread->state, L"Running");
+                        }
+                    }
+                    else
+                    {
+                        wcscpy_s(thread->state, L"Unknown");
+                    }
+                    CloseHandle(hThread);
+                }
+                else
+                {
+                    wcscpy_s(thread->state, L"N/A");
+                }
+
+                PostMessage(data->hMemView, WM_USER_ADD_THREAD, (WPARAM)thread, 0);
+            }
+        } while (Thread32Next(hSnap, &te32));
+    }
+
+    CloseHandle(hSnap);
+    PostMessage(data->hMemView, WM_USER_THREADS_DONE, 0, 0);
     delete data;
     return 0;
 }
@@ -1543,6 +1664,8 @@ void CreateMemViewControls(HWND hwnd)
     TabCtrl_InsertItem(hTab, 1, &tie);
     tie.pszText = (LPWSTR)L"Modules";
     TabCtrl_InsertItem(hTab, 2, &tie);
+    tie.pszText = (LPWSTR)L"Threads";
+    TabCtrl_InsertItem(hTab, 3, &tie);
 
     // Calculate the display area for the tab's content, relative to the main window
     RECT rcTabWindow;
@@ -1634,10 +1757,36 @@ void CreateMemViewControls(HWND hwnd)
     lvcModule.cx = listWidth - totalWidth - 4;
     ListView_InsertColumn(hModuleList, 3, &lvcModule);
 
+    // Create Thread List View
+    HWND hThreadList = CreateWindowW(WC_LISTVIEW, L"", WS_CHILD | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
+                                     childX, childY, childWidth, childHeight,
+                                     hwnd, (HMENU)IDC_MV_THREAD_LIST, NULL, NULL);
+    SendMessage(hThreadList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+    ListView_SetExtendedListViewStyle(hThreadList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+
+    // Setup columns for thread list
+    GetClientRect(hThreadList, &rcList);
+    listWidth = rcList.right - rcList.left;
+
+    LVCOLUMNW lvcThread = {0};
+    lvcThread.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+
+    const wchar_t *threadColNames[] = {L"Thread ID", L"Base Priority", L"State"};
+    int threadColWidths[] = {120, 120, 120};
+
+    for (int i = 0; i < 3; ++i)
+    {
+        lvcThread.iSubItem = i;
+        lvcThread.pszText = (LPWSTR)threadColNames[i];
+        lvcThread.cx = threadColWidths[i];
+        ListView_InsertColumn(hThreadList, i, &lvcThread);
+    }
+
     // Show the first page, hide the second
     ShowWindow(hDumpOutput, SW_SHOW);
     ShowWindow(hRegionList, SW_HIDE);
     ShowWindow(hModuleList, SW_HIDE);
+    ShowWindow(hThreadList, SW_HIDE);
 }
 
 LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -1696,12 +1845,38 @@ LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         break;
     }
+    case WM_USER_ADD_THREAD:
+    {
+        ThreadData *thread = (ThreadData *)wParam;
+        if (thread)
+        {
+            HWND hList = GetDlgItem(hwnd, IDC_MV_THREAD_LIST);
+            int index = ListView_GetItemCount(hList);
+
+            LVITEMW item = {0};
+            item.mask = LVIF_TEXT;
+            item.iItem = index;
+            item.iSubItem = 0;
+            item.pszText = thread->threadId;
+            ListView_InsertItem(hList, &item);
+
+            ListView_SetItemText(hList, index, 1, thread->priority);
+            ListView_SetItemText(hList, index, 2, thread->state);
+
+            delete thread;
+        }
+        break;
+    }
     case WM_USER_REGIONS_DONE:
     {
         EnableWindow(GetDlgItem(hwnd, IDC_MV_LIST_BTN), TRUE);
         break;
     }
     case WM_USER_MODULES_DONE:
+    {
+        break;
+    }
+    case WM_USER_THREADS_DONE:
     {
         break;
     }
@@ -1729,6 +1904,7 @@ LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             ShowWindow(GetDlgItem(hwnd, IDC_MV_DUMP_OUTPUT), iPage == 0 ? SW_SHOW : SW_HIDE);
             ShowWindow(GetDlgItem(hwnd, IDC_MV_REGION_LIST), iPage == 1 ? SW_SHOW : SW_HIDE);
             ShowWindow(GetDlgItem(hwnd, IDC_MV_MODULE_LIST), iPage == 2 ? SW_SHOW : SW_HIDE);
+            ShowWindow(GetDlgItem(hwnd, IDC_MV_THREAD_LIST), iPage == 3 ? SW_SHOW : SW_HIDE);
             if (iPage == 1)
             {
                 if (ListView_GetItemCount(GetDlgItem(hwnd, IDC_MV_REGION_LIST)) == 0)
@@ -1741,6 +1917,13 @@ LRESULT CALLBACK MemViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (ListView_GetItemCount(GetDlgItem(hwnd, IDC_MV_MODULE_LIST)) == 0)
                 {
                     HandleListModules(hwnd);
+                }
+            }
+            else if (iPage == 3)
+            {
+                if (ListView_GetItemCount(GetDlgItem(hwnd, IDC_MV_THREAD_LIST)) == 0)
+                {
+                    HandleListThreads(hwnd);
                 }
             }
         }
